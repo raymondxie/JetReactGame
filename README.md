@@ -1,1 +1,3 @@
 # JetReactGame
+Borrowed the project name of JET and React.....
+A one dimension game playing out on a long LED strip, to capture sparkly gem, or run for life.
