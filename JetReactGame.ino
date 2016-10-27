@@ -4,16 +4,23 @@
  */
 
 #include <Adafruit_NeoPixel.h>
+#include <SoftwareSerial.h>
 
-#define PIN 6
+#define PIN_LED 6
+#define PIN_START 7
 #define STRIP_LEN 180
 #define PIN_UP 8
 #define PIN_DOWN 9
 #define PIN_LEFT 10
 #define PIN_RIGHT 11
 
+// game state
+#define GAME_STARTED 1
+#define GAME_OVER 2
+#define GAME_IDLE 0
 
-Adafruit_NeoPixel theStrip = Adafruit_NeoPixel(STRIP_LEN, PIN, NEO_GRB + NEO_KHZ800);
+SoftwareSerial mySerial(16, 17); // RX, TX
+Adafruit_NeoPixel theStrip = Adafruit_NeoPixel(STRIP_LEN, PIN_LED, NEO_GRB + NEO_KHZ800);
 uint32_t sabreColor = theStrip.Color(0,127,127);
 uint32_t headColor = theStrip.Color(0,255,255);
 uint32_t offColor = theStrip.Color(0,0,0);
@@ -193,7 +200,7 @@ class Sparkle {
     lightTime = millis();
     darkTime = millis();
     // start with dark
-    darkDuration = random(2000, 10000);
+    darkDuration = random(500, 3000);
     state = 0;
     stingCount = 0;
   }
@@ -211,7 +218,7 @@ class Sparkle {
         strip.setPixelColor(head-1, color);
         strip.setPixelColor(head-2, color);
         strip.show();
-        delay(150);
+        delay(100);
      }
   }
 
@@ -255,7 +262,9 @@ class Sparkle {
 
       if( hitPoint > 0 ) {
         // report points - write it through serial port to NodeMCU
-
+        mySerial.print("C");
+        mySerial.println(hitPoint);
+        
         // celebrate
         celebrate(head, strip);
 
@@ -288,6 +297,7 @@ class Sparkle {
       }
       if( stingCount > 3 ) {
         // report sting
+        mySerial.println("D100");
 
         // show light effect - blink head
         blinkHead(head, strip);
@@ -314,7 +324,7 @@ class Sparkle {
         strip.show();
   
         darkTime= millis();
-        darkDuration = random(5000, 7000);
+        darkDuration = random(1500, 3500);
         state = 0;
       }
     }
@@ -343,14 +353,99 @@ class Sparkle {
 };
 
 
+class GameState {
+  int state;
+  long startTime;       // game start
+  long endTime;         // game over time
+  long idleTime;        // mark idle time start
+  long lastActiveTime;  // last time the user moved joystick
+  long IDLE_TIME_START = 10000; // if no activity for 20 secs, go in idle mode
+  long GAME_DURATION = 15000; // 30 seconds
+  
+  public:
+  GameState() {
+    // start with game-over mode
+    state = GAME_OVER;
+    startTime = millis();
+    endTime = millis();
+    lastActiveTime = millis();
+  }
+
+  void setActive() {
+    lastActiveTime = millis();  
+  }
+
+  void start() {
+    startTime = millis();
+    state = GAME_STARTED;
+    Serial.println("Game started");
+  }
+
+  int check() {
+    long currTime = millis();
+    long duration = currTime - startTime;
+
+    // game time up
+    if( state == GAME_STARTED && duration > GAME_DURATION ) {
+      state = GAME_OVER;
+      endTime = currTime;
+      Serial.println("Game over");
+    }
+
+    if( state == GAME_OVER && (currTime - endTime) > IDLE_TIME_START ) {
+      state = GAME_IDLE;
+      Serial.println("Game going idle mode"); 
+    }
+
+    return state;
+  }
+};
+uint32_t Wheel(byte WheelPos) {
+  WheelPos = 255 - WheelPos;
+  if(WheelPos < 85) {
+   return theStrip.Color(255 - WheelPos * 3, 0, WheelPos * 3);
+  } else if(WheelPos < 170) {
+    WheelPos -= 85;
+   return theStrip.Color(0, WheelPos * 3, 255 - WheelPos * 3);
+  } else {
+   WheelPos -= 170;
+   return theStrip.Color(WheelPos * 3, 255 - WheelPos * 3, 0);
+  }
+}
+
+void rainbow(uint8_t wait) {
+  uint16_t i, j;
+
+  for(j=0; j<256; j++) {
+    for(i=0; i<theStrip.numPixels(); i++) {
+      theStrip.setPixelColor(i, Wheel((i+j) & 255));
+    }
+    theStrip.show();
+    delay(wait);
+  }
+}
+
+void clearStrip() {
+  uint16_t i = 0;
+  for(i=0; i<STRIP_LEN; i++) {
+    theStrip.setPixelColor(i, offColor); 
+  }
+  theStrip.show();
+}
+
+void showHead(uint16_t head) {
+  
+}
+
 Jetter sabre(60, sabreColor, headColor);
 Joystick stick(PIN_UP, PIN_DOWN, PIN_LEFT, PIN_RIGHT);
+GameState game;
 
+Sparkle gold(goldColor, 1500);  // what color, stay for how long
 Sparkle amethyst(amethystColor, 2000);
-Sparkle emerald(emeraldColor, 3000);
-Sparkle sapphire(sapphireColor, 4000);
-Sparkle gold(goldColor, 2000);
-Sparkle wasp(waspColor, 5000);
+Sparkle emerald(emeraldColor, 2500);
+Sparkle sapphire(sapphireColor, 3000);
+Sparkle wasp(waspColor, 3500);
 
 // Left move to capture gem
 void detectLeftMove(uint16_t head, Adafruit_NeoPixel& strip)
@@ -371,9 +466,14 @@ void detectRightMove(uint16_t head, Adafruit_NeoPixel& strip)
 
 uint16_t spot = 0;
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(19200);
+  mySerial.begin(9600);
+  
   theStrip.begin();
   theStrip.show();
+
+  // to start game
+  pinMode(PIN_START, INPUT_PULLUP);
   
   sabre.attachStrip(theStrip);
   spot = random(1,180);
@@ -381,9 +481,20 @@ void setup() {
 
 
 void loop() {
-  Serial.print("looping  ");
-  Serial.println( spot );
 
+  int state = game.check();
+  Serial.print("Game state:");
+  Serial.println( state );
+  
+
+  if( digitalRead(PIN_START) == LOW && state != GAME_STARTED) {
+    Serial.println( "Starting game........");
+    game.start();
+    clearStrip();
+    spot = 90;
+    state = game.check();
+  }
+  
   int dir = stick.checkDir();
   switch(dir) {
     case 1: // up
@@ -402,6 +513,10 @@ void loop() {
       // no movement, do nothing
       break;
   }
+  
+  if( dir > 0 && dir < 5) {
+    game.setActive();
+  }
 
   // protect strip light spot
   if(spot < 0 ) {
@@ -410,16 +525,27 @@ void loop() {
   if(spot > STRIP_LEN) {
     spot = STRIP_LEN-3;
   }
-  
-  sabre.jetTo(spot, theStrip);
-  
-  amethyst.updateLight(theStrip);
-  emerald.updateLight(theStrip);
-  sapphire.updateLight(theStrip);
-  gold.updateLight(theStrip);
-  
-  wasp.moveLight(spot, theStrip);
-  wasp.updateLight(theStrip);
-  
+
+  if( state == GAME_IDLE) {
+    Serial.println("TBD: playing GAME_IDLE effect");
+    spot = random(3, 177);
+  }
+
+  if( state == GAME_STARTED || state == GAME_IDLE) {
+    sabre.jetTo(spot, theStrip);
+    
+    amethyst.updateLight(theStrip);
+    emerald.updateLight(theStrip);
+    sapphire.updateLight(theStrip);
+    gold.updateLight(theStrip);
+    
+    wasp.moveLight(spot, theStrip);
+    wasp.updateLight(theStrip);
+  }
+  else if( state == GAME_OVER) {
+    Serial.println("TBD: playing GAME_OVER effect");
+    rainbow(1);
+  }
+
   delay(10);
 }
