@@ -7,8 +7,11 @@
 #include <SoftwareSerial.h>
 
 #define PIN_LED 6
-#define PIN_START 7
 #define STRIP_LEN 180
+#define STAR_LED 5
+#define STAR_LEN  7
+
+#define PIN_START 7
 #define PIN_UP 8
 #define PIN_DOWN 9
 #define PIN_LEFT 10
@@ -19,8 +22,14 @@
 #define GAME_OVER 2
 #define GAME_IDLE 0
 
+const long IDLE_TIME_START = 10000; // if no activity for 10 secs, go in idle mode
+const long GAME_DURATION = 30000;   // 30 seconds
+
+
 SoftwareSerial mySerial(16, 17); // RX, TX
 Adafruit_NeoPixel theStrip = Adafruit_NeoPixel(STRIP_LEN, PIN_LED, NEO_GRB + NEO_KHZ800);
+Adafruit_NeoPixel theStar  = Adafruit_NeoPixel(STAR_LEN, STAR_LED, NEO_GRB + NEO_KHZ800);
+
 uint32_t sabreColor = theStrip.Color(0,127,127);
 uint32_t headColor = theStrip.Color(0,255,255);
 uint32_t offColor = theStrip.Color(0,0,0);
@@ -205,22 +214,27 @@ class Sparkle {
     stingCount = 0;
   }
 
+
   // got a gem!
-  void celebrate(uint16_t head, Adafruit_NeoPixel&  strip) {
-    for(int i=0; i<10; i++) {
-        int r = random(10,255); 
-        int g = random(10,255);
-        int b = random(10,255);
-        uint32_t color = strip.Color(r,g,b);
-        strip.setPixelColor(head+2, color);
-        strip.setPixelColor(head+1, color);
-        strip.setPixelColor(head, color);
-        strip.setPixelColor(head-1, color);
-        strip.setPixelColor(head-2, color);
+  void collectGem(uint16_t pos, Adafruit_NeoPixel&  strip, Adafruit_NeoPixel&  star) {
+    uint32_t preColor = strip.getPixelColor(pos);
+
+    // shoot the gem to the box
+    for(int i=pos; i>0; i--) {
+        strip.setPixelColor(i, preColor);
+        preColor = strip.getPixelColor(i-1);
+        strip.setPixelColor(i-1, color);
         strip.show();
-        delay(100);
-     }
+        delay(1);              
+    }
+
+    // light up stars
+    for(int j=0; j<STAR_LEN; j++) {
+      star.setPixelColor(j,color);
+    }
+    star.show();
   }
+
 
   // stung by wasp
   void blinkHead(uint16_t head, Adafruit_NeoPixel& strip) {
@@ -233,6 +247,7 @@ class Sparkle {
         else {
           color = waspColor;
         }
+        
         strip.setPixelColor(head+2, color);
         strip.setPixelColor(head+1, color);
         strip.setPixelColor(head, color);
@@ -244,7 +259,7 @@ class Sparkle {
   }
   
   // see if captured gem
-  void detect(uint16_t head, Adafruit_NeoPixel&  strip) {
+  void detect(uint16_t head, Adafruit_NeoPixel&  strip, Adafruit_NeoPixel&  star) {
     if( state == 1 ) {
       int hitPoint = 0;
       if( abs(head-pos) == 0 ) {
@@ -262,17 +277,13 @@ class Sparkle {
 
       if( hitPoint > 0 ) {
         // report points - write it through serial port to NodeMCU
-        mySerial.print("C");
+        mySerial.print("point=");
         mySerial.println(hitPoint);
         
-        // celebrate
-        celebrate(head, strip);
+        // now shoot this gem to box, light up stars
+        Serial.println("collecting gem");
+        collectGem(pos, strip, star);
 
-        // now turn off this gem and make it dark
-        Serial.println("going to dark");
-        strip.setPixelColor(pos, offColor);
-        strip.show();
-  
         darkTime= millis();
         darkDuration = random(5000, 7000);
         state = 0;        
@@ -297,7 +308,7 @@ class Sparkle {
       }
       if( stingCount > 3 ) {
         // report sting
-        mySerial.println("D100");
+        mySerial.println("point=-40");
 
         // show light effect - blink head
         blinkHead(head, strip);
@@ -359,8 +370,6 @@ class GameState {
   long endTime;         // game over time
   long idleTime;        // mark idle time start
   long lastActiveTime;  // last time the user moved joystick
-  long IDLE_TIME_START = 10000; // if no activity for 20 secs, go in idle mode
-  long GAME_DURATION = 15000; // 30 seconds
   
   public:
   GameState() {
@@ -378,7 +387,8 @@ class GameState {
   void start() {
     startTime = millis();
     state = GAME_STARTED;
-    Serial.println("Game started");
+    // report game started
+    mySerial.println("game=started");
   }
 
   int check() {
@@ -389,17 +399,22 @@ class GameState {
     if( state == GAME_STARTED && duration > GAME_DURATION ) {
       state = GAME_OVER;
       endTime = currTime;
-      Serial.println("Game over");
+      
+      // report game over
+      mySerial.println("game=ended");
     }
 
     if( state == GAME_OVER && (currTime - endTime) > IDLE_TIME_START ) {
       state = GAME_IDLE;
+      // report game idle - no need to let scoreboard know
       Serial.println("Game going idle mode"); 
     }
 
     return state;
   }
 };
+
+
 uint32_t Wheel(byte WheelPos) {
   WheelPos = 255 - WheelPos;
   if(WheelPos < 85) {
@@ -433,9 +448,13 @@ void clearStrip() {
   theStrip.show();
 }
 
-void showHead(uint16_t head) {
-  
+void clearStar() {
+  for(int i=0; i<STAR_LEN; i++) {
+    theStar.setPixelColor(i, offColor);
+  }
+  theStar.show();
 }
+
 
 Jetter sabre(60, sabreColor, headColor);
 Joystick stick(PIN_UP, PIN_DOWN, PIN_LEFT, PIN_RIGHT);
@@ -448,20 +467,20 @@ Sparkle sapphire(sapphireColor, 3000);
 Sparkle wasp(waspColor, 3500);
 
 // Left move to capture gem
-void detectLeftMove(uint16_t head, Adafruit_NeoPixel& strip)
+void detectLeftMove(uint16_t head)
 {
   // current head position
-  amethyst.detect(head, strip);
-  emerald.detect(head, strip);
-  sapphire.detect(head, strip);
-  gold.detect(head, strip);
+  amethyst.detect(head, theStrip, theStar);
+  emerald.detect(head, theStrip, theStar);
+  sapphire.detect(head, theStrip, theStar);
+  gold.detect(head, theStrip, theStar);
 }
 
 // Right move to knock off wasp
-void detectRightMove(uint16_t head, Adafruit_NeoPixel& strip)
+void detectRightMove(uint16_t head)
 {
   // current head position
-  wasp.detect(head, strip);
+  wasp.detect(head, theStrip, theStar);
 }
 
 uint16_t spot = 0;
@@ -471,6 +490,9 @@ void setup() {
   
   theStrip.begin();
   theStrip.show();
+  theStar.begin();
+  theStar.show();
+  theStar.setBrightness(32);
 
   // to start game
   pinMode(PIN_START, INPUT_PULLUP);
@@ -504,10 +526,10 @@ void loop() {
       spot = spot - 2;
       break;
     case 3: // gem
-      detectLeftMove(spot, theStrip);
+      detectLeftMove(spot);
       break;
     case 4: // wasp
-      detectRightMove(spot, theStrip);
+      detectRightMove(spot);
       break;
     default:
       // no movement, do nothing
@@ -518,17 +540,20 @@ void loop() {
     game.setActive();
   }
 
-  // protect strip light spot
-  if(spot < 0 ) {
-    spot = 3;
-  }
-  if(spot > STRIP_LEN) {
-    spot = STRIP_LEN-3;
-  }
-
   if( state == GAME_IDLE) {
     Serial.println("TBD: playing GAME_IDLE effect");
-    spot = random(3, 177);
+    // simulation of game
+    detectLeftMove(spot);
+    delay(50);
+    spot = spot + random(-5, 3);
+  }
+
+  // protect strip light spot
+  if(spot < 0 ) {
+    spot = 5;
+  }
+  if(spot > STRIP_LEN) {
+    spot = STRIP_LEN-5;
   }
 
   if( state == GAME_STARTED || state == GAME_IDLE) {
@@ -545,6 +570,8 @@ void loop() {
   else if( state == GAME_OVER) {
     Serial.println("TBD: playing GAME_OVER effect");
     rainbow(1);
+    
+    clearStar();
   }
 
   delay(10);
